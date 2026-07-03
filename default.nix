@@ -383,8 +383,18 @@ let
       nestedLayers = l.concatMap (l: l.nestedLayers) layers;
       allLayers = nestedLayers ++ layers;
 
+      # copyToRootList paths are relocated to the image root (their /nix/store
+      # prefix is stripped by buildLayer's rewrites), so their content is absent
+      # from /nix/store inside the image. Exclude them from the initialized nix
+      # database the same way relocated layer paths already are: keeping them in
+      # the closure-graph `paths` still pulls their references (which DO remain at
+      # /nix/store) into the DB, while adding them to `ignore` drops the phantom
+      # roots themselves. Without this, the image's nix DB registers store paths
+      # whose content isn't present; a nix build run inside the image that
+      # re-derives those same fixed-output paths then skips rebuilding them (the
+      # DB marks them valid) and fails when the packer lstat's the absent path.
       nixDatabase = let
-        ignore = [configFile]++allLayers;
+        ignore = [configFile] ++ copyToRootList ++ allLayers;
         closureGraphForAllLayers = closureGraph ([configFile] ++ copyToRootList ++ allLayers) ignore;
       in makeNixDatabase closureGraphForAllLayers;
 
