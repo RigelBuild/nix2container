@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-      - 'master'
+      - 'rigel-release'
 jobs:
   tests:
     # This is because we hit the following issue with ubuntu 24.04:

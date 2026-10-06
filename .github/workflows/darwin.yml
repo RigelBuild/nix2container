@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-      - 'master'
+      - 'rigel-release'
 jobs:
   build:
     runs-on: macos-latest

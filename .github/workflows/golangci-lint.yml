@@ -4,8 +4,7 @@ on:
     tags:
       - v*
     branches:
-      - master
-      - main
+      - rigel-release
   pull_request:
 permissions:
   contents: read
