@@ -2,7 +2,7 @@ on:
   pull_request:
   push:
     branches:
-      - 'master'
+      - 'rigel-release'
 name: Test Golang
 jobs:
   test:
