@@ -1,6 +1,7 @@
 package nix
 
 import (
+	"archive/tar"
 	"testing"
 
 	"github.com/nlewo/nix2container/types"
@@ -91,4 +92,76 @@ func TestNewLayers(t *testing.T) {
 		},
 	}
 	assert.Equal(t, expected, layer)
+}
+
+// Each layer tar written to the tar directory must hold that layer's
+// paths only, so it must match the digest of the reproducible layer.
+func TestNewLayersNonReproducibleWritesEachLayer(t *testing.T) {
+	paths := []string{
+		"../data/layer1/file1",
+		"../data/tar-directory/file1",
+	}
+	reproducible, err := NewLayers(paths, 2, []types.Layer{}, []types.RewritePath{}, "", []types.PermPath{}, v1.History{})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	written, err := NewLayersNonReproducible(paths, 2, t.TempDir(), []types.Layer{}, []types.RewritePath{}, "", []types.PermPath{}, v1.History{})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	assert.Len(t, written, 2)
+	for i := range written {
+		assert.Len(t, written[i].Paths, 1)
+		assert.Equal(t, reproducible[i].Digest, written[i].Digest)
+	}
+}
+
+// OrMode must OR bits into the mode set by Mode: {Mode:"0444",
+// OrMode:"0311"} yields 0755 on a regular file.
+func TestPermsOrMode(t *testing.T) {
+	paths := []string{"../data/layer1/file1"}
+	perms := []types.PermPath{
+		{Path: "../data/layer1/file1", Regex: ".*", Mode: "0444", OrMode: "0311"},
+	}
+	layers, err := NewLayers(paths, 1, nil, nil, "", perms, v1.History{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := TarPaths(layers[0].Paths)
+	defer r.Close() // nolint: errcheck
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if hdr.Name == "../data/layer1/file1" && hdr.Typeflag == tar.TypeReg {
+			assert.Equal(t, int64(0o755), hdr.Mode&0o777)
+			return
+		}
+	}
+	t.Fatal("file1 not found in layer tar")
+}
+
+func TestNewLayersFromSplit(t *testing.T) {
+	split := [][]string{
+		{"../data/tar-directory/file1"},
+		{"../data/layer1/file1"},
+	}
+	layers, err := NewLayersFromSplit(split, []types.Layer{}, []types.RewritePath{}, "", []types.PermPath{}, v1.History{})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	assert.Len(t, layers, 2)
+	assert.Equal(t, "../data/tar-directory/file1", layers[0].Paths[0].Path)
+	assert.Equal(t, "../data/layer1/file1", layers[1].Paths[0].Path)
+
+	// A group whose paths are all in a parent layer yields no layer.
+	parents := layers[:1]
+	layers, err = NewLayersFromSplit(split, parents, []types.RewritePath{}, "", []types.PermPath{}, v1.History{})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	assert.Len(t, layers, 1)
+	assert.Equal(t, "../data/layer1/file1", layers[0].Paths[0].Path)
 }

@@ -15,12 +15,9 @@ let
       ]);
     };
     vendorHash = "sha256-KPJSt2QTcyIgC6S/ASuc1xSEIXrPDFMnd+5MhCQqia4=";
-    ldflags = l.optional pkgs.stdenv.isDarwin
-      "-X github.com/nlewo/nix2container/nix.useNixCaseHack=true";
   };
 
   skopeo-nix2container = pkgs.skopeo.overrideAttrs (old: {
-    EXTRA_LDFLAGS = l.optionalString pkgs.stdenv.isDarwin "-X github.com/nlewo/nix2container/nix.useNixCaseHack=true";
     nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.patchutils ];
     preBuild = let
       # Needs to use fetchpatch2 to handle "git extended headers", which include
@@ -229,15 +226,26 @@ let
     # The mode is applied on a specific path. In this path subtree,
     # the mode is then applied on all files matching the regex.
     perms ? [],
+    # A JSON file with the same list `perms` would be written to, for
+    # callers whose perms come out of a build (read from a tar's
+    # headers, say) rather than being known at eval time. Exactly one
+    # of perms and permsFile.
+    permsFile ? null,
     # The maximun number of layer to create. This is based on the
     # store path "popularity" as described in
     # https://grahamc.com/blog/nix-and-layered-docker-images
     maxLayers ? 1,
+    # A JSON file holding a list of store path lists: the layer split
+    # to use, in order. When set, maxLayers is ignored.
+    layersFile ? null,
     # Deprecated: will be removed on v1
     contents ? null,
     # Author, comment, created_by
     metadata ? { created_by = "nix2container"; },
-  }: let
+  }:
+  assert l.assertMsg (permsFile == null || perms == [])
+    "nix2container.buildLayer: perms and permsFile are exclusive";
+  let
     subcommand = if reproducible
       then "layers-from-reproducible-storepaths"
       else "layers-from-non-reproducible-storepaths";
@@ -255,14 +263,15 @@ let
     rewritesFile = pkgs.writeText "rewrites.json" (l.toJSON rewrites);
     rewritesFlag = "--rewrites ${rewritesFile}";
 
-    permsFile = pkgs.writeText "perms.json" (l.toJSON perms);
-    permsFlag = l.optionalString (perms != []) "--perms ${permsFile}";
+    permsJson = if permsFile != null then permsFile else pkgs.writeText "perms.json" (l.toJSON perms);
+    permsFlag = l.optionalString (perms != [] || permsFile != null) "--perms ${permsJson}";
 
     historyFile = pkgs.writeText "history.json" (l.toJSON metadata);
     historyFlag = l.optionalString (metadata != {}) "--history ${historyFile}";
 
     allDeps = deps ++ copyToRootList;
     tarDirectory = l.optionalString (!reproducible) "--tar-directory $out";
+    layersFlag = l.optionalString (layersFile != null) "--layers-json ${layersFile}";
 
     layersJSON = pkgs.runCommandLocal "layers.json" {} ''
       mkdir $out
@@ -271,6 +280,7 @@ let
         $out/layers.json \
         ${closureGraph allDeps ignore} \
         --max-layers ${toString maxLayers} \
+        ${layersFlag} \
         ${rewritesFlag} \
         ${permsFlag} \
         ${historyFlag} \
@@ -304,6 +314,14 @@ let
       sqlite3 $PWD/nix/var/nix/db/db.sqlite '.dump' > db.dump
       mkdir -p $out/nix/var/nix/db/
       sqlite3 $out/nix/var/nix/db/db.sqlite '.read db.dump'
+
+      # The dump doesn't carry the schema version marker. Without it Nix takes the store for a
+      # new one, and concurrent processes race to reinitialize it.
+      cp $PWD/nix/var/nix/db/schema $out/nix/var/nix/db/schema
+
+      # sqlite3 leaves the DB in `delete` mode, while Nix switches to WAL on open. That switch
+      # takes an exclusive lock, so concurrent openers fail with "database is busy".
+      sqlite3 $out/nix/var/nix/db/db.sqlite 'pragma journal_mode = wal' > /dev/null
 
       mkdir -p $out/nix/var/nix/gcroots/docker/
       ln -s $(jq -r '.[].path' ${closureGraphJson}) $out/nix/var/nix/gcroots/docker/
@@ -342,6 +360,9 @@ let
     copyToRoot ? null,
     # An image that is used as base image of this image.
     fromImage ? null,
+    # Keep the config.Env entries of fromImage that `config` does not
+    # set. Other fields of the base config are not inherited.
+    fromImageEnv ? false,
     # Image architecture
     arch ? pkgs.go.GOARCH,
     # A list of file permisssions which are set when the tar layer is
@@ -383,18 +404,8 @@ let
       nestedLayers = l.concatMap (l: l.nestedLayers) layers;
       allLayers = nestedLayers ++ layers;
 
-      # copyToRootList paths are relocated to the image root (their /nix/store
-      # prefix is stripped by buildLayer's rewrites), so their content is absent
-      # from /nix/store inside the image. Exclude them from the initialized nix
-      # database the same way relocated layer paths already are: keeping them in
-      # the closure-graph `paths` still pulls their references (which DO remain at
-      # /nix/store) into the DB, while adding them to `ignore` drops the phantom
-      # roots themselves. Without this, the image's nix DB registers store paths
-      # whose content isn't present; a nix build run inside the image that
-      # re-derives those same fixed-output paths then skips rebuilding them (the
-      # DB marks them valid) and fails when the packer lstat's the absent path.
       nixDatabase = let
-        ignore = [configFile] ++ copyToRootList ++ allLayers;
+        ignore = [configFile]++allLayers++copyToRootList;
         closureGraphForAllLayers = closureGraph ([configFile] ++ copyToRootList ++ allLayers) ignore;
       in makeNixDatabase closureGraphForAllLayers;
 
@@ -416,7 +427,8 @@ let
         layers = layers;
       };
 
-      fromImageFlag = l.optionalString (fromImage != null) "--from-image ${fromImage}";
+      fromImageFlag = l.optionalString (fromImage != null) "--from-image ${fromImage}"
+        + l.optionalString (fromImage != null && fromImageEnv) " --from-image-env";
       archFlag = "--arch ${arch}";
       createdFlag = "--created ${created}";
       layerPaths = l.concatMapStringsSep " " (l: l + "/layers.json") (allLayers ++ [customizationLayer]);

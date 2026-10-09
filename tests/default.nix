@@ -5,14 +5,16 @@ let
     image,
     command ? "",
     grepFlags ? "",
+    expectedReturnCode ? 0,
     pattern,
   }: pkgs.writeShellScriptBin "test-script" ''
     ${image.copyToPodman}/bin/copy-to-podman
     ${pkgs.podman}/bin/podman run ${image.imageName}:${image.imageTag} ${command} | ${pkgs.gnugrep}/bin/grep ${grepFlags} '${pattern}'
     ret=$?
-    if [ $ret -ne 0 ];
+    if [ $ret -ne ${builtins.toString expectedReturnCode} ];
     then
-      echo "image list"
+      echo "Return code is $ret while ${builtins.toString expectedReturnCode} is expected"
+      echo "Image list"
       ${pkgs.podman}/bin/podman image list
       echo ""
       echo "Actual output:"
@@ -62,6 +64,10 @@ let
       image = examples.layered;
       pattern = "Hello, world";
     };
+    layersFile = testScript {
+      image = examples.layersFile;
+      pattern = "Hello, world";
+    };
     nonReproducible = testScript {
       image = examples.nonReproducible;
       pattern = "A non reproducible image built the";
@@ -81,6 +87,16 @@ let
       command = "nix-store -qR ${pkgs.nix}";
       pattern = "${pkgs.nix}";
     };
+    # Regression test for https://github.com/nlewo/nix2container/issues/192
+    nix-verify-database = testScript {
+      image = examples.nix;
+      command = "nix-store --verify 2>&1";
+      # When the nix database contains absent FS store paths, nix-store --verify outputs:
+      # checking path existence...
+      # path '/nix/store/1x2q6vc1ygmbxsfxlal2blavpirs7rnl-root' disappeared, removing from database...      
+      pattern = "removing from database";
+      expectedReturnCode = 1;
+    };
     nix-user = testScript {
       image = examples.nix-user;
       grepFlags = "-Pz";
@@ -94,6 +110,48 @@ let
       command = "nix-store -qR ${pkgs.hello}";
       pattern = "${pkgs.hello}";
     };
+    # The schema marker and WAL mode are what let several processes open the store at once.
+    # Checked on the image: racing processes reproduce the bug, but only sometimes.
+    nixDatabaseIsUsableConcurrently = pkgs.runCommand "test-script" { buildInputs = [pkgs.jq pkgs.gnutar pkgs.sqlite]; } ''
+      set -e
+      ${examples.nix.copyTo}/bin/copy-to dir://$PWD/image
+      cd $PWD/image
+
+      # List to files first: with `pipefail`, a `grep -q` that matches kills `tar` with
+      # SIGPIPE and the pipeline reports failure.
+      for layer in $(jq -r '.layers[].digest' manifest.json | cut -d":" -f2); do
+        tar -tf "$layer" > "entries-$layer"
+      done
+
+      set -- $(grep -lE '(^|/)nix/var/nix/db/db\.sqlite$' entries-* || true)
+      if [ $# -eq 0 ]; then
+        echo "Error: no layer holds the Nix database"
+        exit 1
+      fi
+      entries=$1
+      dbLayer=''${entries#entries-}
+
+      echo "Checking the schema version marker is shipped..."
+      if ! grep -E '(^|/)nix/var/nix/db/schema$' "$entries" > /dev/null; then
+        echo "Error: the image ships no nix/var/nix/db/schema"
+        exit 1
+      fi
+
+      echo "Checking the database is in WAL mode..."
+      dbName=$(awk '/(^|\/)nix\/var\/nix\/db\/db\.sqlite$/ { print; exit }' "$entries")
+      tar -xOf "$dbLayer" "$dbName" > db.sqlite
+      journalMode=$(sqlite3 db.sqlite 'PRAGMA journal_mode;')
+      if [ "$journalMode" != "wal" ]; then
+        echo "Error: expected the database in WAL mode, got $journalMode"
+        exit 1
+      fi
+
+      echo Test passed
+      # TODO: actually this test doesn't need to be run
+      mkdir -p $out/bin
+      echo echo Test passed > $out/bin/test-script
+      chmod a+x $out/bin/test-script
+    '';
     # The /nix have to be explicitly present in the archive with 755 perms
     nonRegressionIssue12 = pkgs.runCommand "test-script" { buildInputs = [pkgs.jq pkgs.gnutar]; } ''
       set -e

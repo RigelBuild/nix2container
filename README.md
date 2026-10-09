@@ -90,6 +90,12 @@ Function arguments are:
     image of this image; use `pullImage` or `pullImageFromManifest` to
     supply this.
 
+- **`fromImageEnv`** (defaults to `false`): keep the `Env` entries of
+    `fromImage`, the way nixpkgs' `dockerTools` does: one entry per
+    variable, in order of first appearance, and a variable `config` sets
+    takes `config`'s value at the position the base gave it. The other
+    fields of the base configuration are not inherited.
+
 - **`maxLayers`** (defaults to `1`): the maximum number of layers to
     create. This is based on the store path "popularity" as described
     in this [blog
@@ -110,6 +116,12 @@ Function arguments are:
     ```
     The mode is applied on a specific path. In this path subtree,
     the mode is then applied on all files matching the regex.
+
+    `mode` sets the mode, and `orMode` adds bits to it. For instance,
+    `orMode = "0200";` makes the files writable by their owner and
+    keeps their execute bits. With both, `mode` comes first:
+    `{ mode = "0444"; orMode = "0200"; }` gives `0644`. The entries
+    are applied in list order.
 
 - **`initializeNixDatabase`** (defaults to `false`): to initialize the
     Nix database with all store paths added into the image. Note this
@@ -245,9 +257,21 @@ Function arguments are:
     this is applied on the image layers and not on layers added with
     the `buildLayer.layers` attribute.
 
+- **`layersFile`** (defaults to `null`): a JSON file with the layer
+    split to use instead of `maxLayers`: a list of store path lists,
+    one list per layer, in order. Every path of the layer closure (the
+    closure of `deps` and `copyToRoot`, without `ignore`) must appear
+    in exactly one list, and no other path may appear. This lets the
+    split come from another tool, for instance the `store_layers` of
+    the `conf.json` that nixpkgs' `streamLayeredImage` writes.
+
 - **`perms`** (defaults to `[]`): a list of file permisssions which are
     set when the tar layer is created: these permissions are not
     written to the Nix store.
+
+- **`permsFile`** (defaults to `null`): a JSON file holding the list
+    `perms` would hold, for permissions computed by a build rather than
+    known at eval time. Exactly one of `perms` and `permsFile`.
 
     Each element of this permission list is a dict such as
     ```
@@ -258,6 +282,12 @@ Function arguments are:
     ```
     The mode is applied on a specific path. In this path subtree,
     the mode is then applied on all files matching the regex.
+
+    `mode` sets the mode, and `orMode` adds bits to it. For instance,
+    `orMode = "0200";` makes the files writable by their owner and
+    keeps their execute bits. With both, `mode` comes first:
+    `{ mode = "0444"; orMode = "0200"; }` gives `0644`. The entries
+    are applied in list order.
 
 - **`layers`** (defaults to `[]`): a list of layers built with the
     `buildLayer` function: if a store path in deps or contents belongs
