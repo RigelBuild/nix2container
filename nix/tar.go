@@ -2,16 +2,33 @@ package nix
 
 import (
 	"archive/tar"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/nlewo/nix2container/types"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	// The size io.Copy allocates internally. One buffer is reused for a
+	// whole tar stream, so the size only trades syscalls against memory:
+	// 64 KiB, 128 KiB, 256 KiB and 1 MiB all measure the same.
+	copyBufferSize = 32 * 1024
+
+	// The tar stream arrives in pieces as small as one 512-byte header, and
+	// TarPathsWrite would write the blob with one syscall per piece. This
+	// batches them: a 179 MB layer of 5000 files takes around 700 writes
+	// instead of around 19500. The exact size is not critical, it only has
+	// to be well above a tar block; bigger mostly buys fewer syscalls,
+	// which matters more the slower the filesystem underneath.
+	blobWriteBufferSize = 256 * 1024
 )
 
 func TarPathsWrite(paths types.Paths, destinationDirectory string) (string, digest.Digest, int64, error) {
@@ -23,11 +40,15 @@ func TarPathsWrite(paths types.Paths, destinationDirectory string) (string, dige
 	reader := TarPaths(paths)
 	defer reader.Close() // nolint: errcheck
 
-	r := io.TeeReader(reader, f)
+	w := bufio.NewWriterSize(f, blobWriteBufferSize)
+	r := io.TeeReader(reader, w)
 
 	digester := digest.Canonical.Digester()
 	size, err := io.Copy(digester.Hash(), r)
 	if err != nil {
+		return "", "", 0, err
+	}
+	if err := w.Flush(); err != nil {
 		return "", "", 0, err
 	}
 	digest := digester.Digest()
@@ -73,7 +94,7 @@ func createDirectory(tw *tar.Writer, path string) error {
 	return nil
 }
 
-func appendFileToTar(tw *tar.Writer, srcPath, dstPath string, info os.FileInfo, opts *types.PathOptions) error {
+func appendFileToTar(tw *tar.Writer, srcPath, dstPath string, info os.FileInfo, opts *types.PathOptions, buf []byte) error {
 	var link string
 	var err error
 	if info.Mode()&os.ModeSymlink != 0 {
@@ -122,6 +143,21 @@ func appendFileToTar(tw *tar.Writer, srcPath, dstPath string, info os.FileInfo, 
 						return err
 					}
 				}
+				if perms.OrMode != "" {
+					// fmt.Sscanf %o accepts garbage silently ("03x1"→3,
+					// "0o311"→0, "-0200"→-128, and a negative mode makes
+					// archive/tar silently switch the header to GNU
+					// base-256 encoding); ParseUint base 8 rejects all of
+					// it, and bitSize 12 bounds the value to the
+					// permission bits (0o7777). The value is the plain
+					// octal digits ("0200", matching Mode's convention
+					// above), no 0o prefix.
+					or, err := strconv.ParseUint(perms.OrMode, 8, 12)
+					if err != nil {
+						return fmt.Errorf("invalid orMode %q (want octal permission bits like \"0200\"): %w", perms.OrMode, err)
+					}
+					hdr.Mode |= int64(or)
+				}
 			}
 		}
 	}
@@ -133,17 +169,22 @@ func appendFileToTar(tw *tar.Writer, srcPath, dstPath string, info os.FileInfo, 
 	if err := tw.WriteHeader(hdr); err != nil {
 		return fmt.Errorf("could not write hdr '%#v', got error '%s'", hdr, err.Error())
 	}
-	if link == "" {
+	if link == "" && !info.IsDir() {
 		file, err := os.Open(srcPath)
 		if err != nil {
 			return fmt.Errorf("could not open file '%s', got error '%s'", srcPath, err.Error())
 		}
 		defer file.Close() // nolint: errcheck
-		if !info.IsDir() {
-			_, err = io.Copy(tw, file)
-			if err != nil {
-				return fmt.Errorf("could not copy the file '%s' data to the tarball, got error '%s'", srcPath, err.Error())
-			}
+		// io.CopyBuffer ignores buf when the source implements io.WriterTo,
+		// and *os.File does. It would call file.WriteTo(tw), which without a
+		// file on the other side falls back to os.genericWriteTo, an io.Copy
+		// with no buffer: a fresh 32 KiB for every file. The wrapper exposes
+		// Read alone, so the type assertion fails and the copy stays on the
+		// path that uses buf. os.genericWriteTo hides WriteTo the same way,
+		// to keep io.Copy from calling back into it.
+		_, err = io.CopyBuffer(tw, struct{ io.Reader }{file}, buf)
+		if err != nil {
+			return fmt.Errorf("could not copy the file '%s' data to the tarball, got error '%s'", srcPath, err.Error())
 		}
 	}
 	return nil
@@ -179,14 +220,25 @@ func TarPaths(paths types.Paths) io.ReadCloser {
 			}
 		}
 
+		err := sanitizeGraph(graph)
+		if err != nil {
+			if err := w.CloseWithError(err); err != nil {
+				return
+			}
+			return
+		}
+
 		// Once the graph of file has been built, it is walked
 		// in order to generate the tar stream.
-		err := walkGraph(graph, func(srcPath, dstPath string, info *os.FileInfo, options *types.PathOptions) error {
+		// The whole stream is copied through one buffer, since the
+		// graph is walked by this goroutine alone.
+		copyBuf := make([]byte, copyBufferSize)
+		err = walkGraph(graph, func(srcPath, dstPath string, info *os.FileInfo, options *types.PathOptions) error {
 			// This file is a directory
 			if info == nil {
 				return createDirectory(tw, dstPath)
 			}
-			return appendFileToTar(tw, srcPath, dstPath, *info, options)
+			return appendFileToTar(tw, srcPath, dstPath, *info, options, copyBuf)
 		})
 		if err != nil {
 			if err := w.CloseWithError(err); err != nil {

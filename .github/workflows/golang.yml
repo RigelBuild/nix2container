@@ -2,7 +2,7 @@ on:
   pull_request:
   push:
     branches:
-      - 'master'
+      - 'rigel-release'
 name: Test Golang
 jobs:
   test:
@@ -16,6 +16,8 @@ jobs:
       run: go test ./...
   CI:
     needs: [test]
+    # A skipped required check counts as passing, so always run and fail on a non-success test.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-    - run: echo "CI gate passed"
+    - run: test "${{ needs.test.result }}" = success

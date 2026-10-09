@@ -147,8 +147,12 @@ func NewImageFromDir(directory string) (image types.Image, err error) {
 		return image, err
 	}
 
-	// TODO: we should also load the configuration in order to
-	// allow configuration merges
+	// Only Env is loaded, for --from-image-env. The rest of the config
+	// is not read: some images carry Cmd and Entrypoint as strings,
+	// which v1.ImageConfig rejects.
+	if v1ImageConfig.Config != nil {
+		image.ImageConfig.Env = v1ImageConfig.Config.Env
+	}
 
 	for i, l := range v1Manifest.Layers {
 		layerFilename := directory + "/" + l.Digest.Encoded()
@@ -156,6 +160,7 @@ func NewImageFromDir(directory string) (image types.Image, err error) {
 		layer := types.Layer{
 			LayerPath: layerFilename,
 			Digest:    l.Digest.String(),
+			Size:      l.Size,
 			DiffIDs:   v1ImageConfig.RootFS.DiffIDs[i].String(),
 		}
 		switch l.MediaType {
@@ -214,12 +219,18 @@ func NewImageFromManifest(manifestFilename string, blobMapFilename string) (imag
 		return image, err
 	}
 
+	// See the equivalent load in NewImageFromDir.
+	if v1ImageConfig.Config != nil {
+		image.ImageConfig.Env = v1ImageConfig.Config.Env
+	}
+
 	for i, l := range v1Manifest.Layers {
 		layerFilename := blobMap[l.Digest.Encoded()]
 		logrus.Infof("Adding tar file '%s' as image layer", layerFilename)
 		layer := types.Layer{
 			LayerPath: layerFilename,
 			Digest:    l.Digest.String(),
+			Size:      l.Size,
 			DiffIDs:   v1ImageConfig.RootFS.DiffIDs[i].String(),
 		}
 		switch l.MediaType {

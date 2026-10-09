@@ -22,6 +22,20 @@ type Image struct {
 	Created     *time.Time     `json:"created"`
 }
 
+// MarshalJSON normalizes nil Layers to an empty slice so consumers of
+// image.json never see `"layers": null`: a reader that indexes or
+// iterates the layers (e.g. `jq '.layers[]'`, or a Python script doing
+// `json["layers"]`) then works without a null guard. A nil Layers
+// slice is reachable for a config-only image (no base image and no
+// layer entries).
+func (i Image) MarshalJSON() ([]byte, error) {
+	type imageAlias Image // strip the method set to avoid recursion
+	if i.Layers == nil {
+		i.Layers = []Layer{}
+	}
+	return json.Marshal(imageAlias(i))
+}
+
 type Rewrite struct {
 	Regex string `json:"regex"`
 	Repl  string `json:"repl"`
@@ -42,22 +56,30 @@ type RewritePath struct {
 type Perm struct {
 	Regex string `json:"regex"`
 	// Octal representation of file permissions
-	Mode  string `json:"mode"`
-	Uid   int    `json:"uid"`
-	Gid   int    `json:"gid"`
-	Uname string `json:"uname"`
-	Gname string `json:"gname"`
+	Mode string `json:"mode"`
+	// Octal permission bits to OR into the existing mode (e.g. "0200"
+	// to add u+w). Applied after Mode, so {Mode:"0444", OrMode:"0200"}
+	// yields 0644. Lets a single perms entry express "make writable"
+	// over a tree whose files are a mix of 0444/0555 (nix-store
+	// canonicalization) without flattening the execute bit.
+	OrMode string `json:"orMode,omitempty"`
+	Uid    int    `json:"uid"`
+	Gid    int    `json:"gid"`
+	Uname  string `json:"uname"`
+	Gname  string `json:"gname"`
 }
 
 type PermPath struct {
 	Path  string `json:"path"`
 	Regex string `json:"regex"`
 	// Octal representation of file permissions
-	Mode  string `json:"mode"`
-	Uid   int    `json:"uid"`
-	Gid   int    `json:"gid"`
-	Uname string `json:"uname"`
-	Gname string `json:"gname"`
+	Mode string `json:"mode"`
+	// See Perm.OrMode.
+	OrMode string `json:"orMode,omitempty"`
+	Uid    int    `json:"uid"`
+	Gid    int    `json:"gid"`
+	Uname  string `json:"uname"`
+	Gname  string `json:"gname"`
 }
 
 type PathOptions struct {
