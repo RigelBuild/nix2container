@@ -92,6 +92,20 @@ expect_rc 'missing version source rejects skipped initial suffix' 1 "$script" ch
 cd "$dir/repo" || exit 1
 skip="$(write_version 1.1.0-rigel.4)"
 expect_rc 'skipped suffix fails PR check' 1 "$script" check-pr "$new" "$skip"
+git tag v1.1.0-rigel.2 "$new"
+git tag v1.1.0-rigel.9 "$new"
+git tag v1.1.0-rigel.10 "$new"
+git checkout -q -B suffix-sequence "$new"
+eleven="$(write_version 1.1.0-rigel.11)"
+if "$script" check-pr "$new" "$eleven" >/dev/null 2>&1; then
+  echo 'ok   numeric suffix 11 follows tags 1, 2, 9, and 10'
+else
+  echo 'FAIL numeric suffix 11 follows tags 1, 2, 9, and 10'
+  fails=$((fails + 1))
+fi
+ten="$(write_version 1.1.0-rigel.10)"
+expect_rc 'numeric suffix 10 fails after existing suffix 10' 1 "$script" check-pr "$new" "$ten"
+git tag -d v1.1.0-rigel.2 v1.1.0-rigel.9 v1.1.0-rigel.10 >/dev/null
 git checkout -q -b vendor-refresh "$new"
 printf 'vendorHash = "refreshed";\n' >vendor.nix
 git add vendor.nix
@@ -144,6 +158,17 @@ if GH_MODE=collision GH_EXISTING_SHA="$old" "$script" mint "$new" RigelBuild/nix
   fails=$((fails + 1))
 else
   echo 'ok   conflicting 422 fails'
+fi
+
+workflow="$(dirname "$script")/../workflows/release-tag.yaml"
+# Dispatch must mint too; only the ref guard and the job-level PR split may carry an `if`.
+if [ "$(yq -r '.jobs.mint.steps[] | select(.name == "Mint release tag if needed") | has("if")' "$workflow")" = false ] \
+  && [ "$(yq -r '.jobs.mint.if' "$workflow")" = "github.event_name != 'pull_request'" ] \
+  && [ "$(yq -r '.on | has("workflow_dispatch")' "$workflow")" = true ]; then
+  echo 'ok   push and dispatch both reach the mint step'
+else
+  echo 'FAIL push and dispatch both reach the mint step'
+  fails=$((fails + 1))
 fi
 
 [ "$fails" -eq 0 ]
