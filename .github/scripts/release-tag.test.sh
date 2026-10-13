@@ -71,6 +71,25 @@ else
   echo 'FAIL next tracking version PR check'
   fails=$((fails + 1))
 fi
+mkdir -p "$dir/no-version-repo"
+cd "$dir/no-version-repo" || exit 1
+git init -q -b test
+git config user.name test
+git config user.email test@example.invalid
+printf 'base\n' >README
+git add README
+git commit -q -m initial
+missing_base="$(git rev-parse HEAD)"
+added_initial="$(write_version 1.1.0-rigel.1)"
+if "$script" check-pr "$missing_base" "$added_initial" >/dev/null 2>&1; then
+  echo 'ok   missing version source accepts initial suffix'
+else
+  echo 'FAIL missing version source accepts initial suffix'
+  fails=$((fails + 1))
+fi
+skipped_initial="$(write_version 1.1.0-rigel.2)"
+expect_rc 'missing version source rejects skipped initial suffix' 1 "$script" check-pr "$missing_base" "$skipped_initial"
+cd "$dir/repo" || exit 1
 skip="$(write_version 1.1.0-rigel.4)"
 expect_rc 'skipped suffix fails PR check' 1 "$script" check-pr "$new" "$skip"
 git checkout -q -b vendor-refresh "$new"
@@ -90,6 +109,20 @@ if grep -q "sha=${new}" "$GH_LOG"; then
   echo 'ok   mint targets the commit that set the version'
 else
   echo 'FAIL mint targets the commit that set the version'
+  fails=$((fails + 1))
+fi
+git checkout -q -b side-version "$old"
+different="$(write_version 1.1.0-rigel.3)"
+git checkout -q vendor-refresh
+git merge --no-ff --no-commit "$different" >/dev/null 2>&1
+printf '%s\n' 1.1.0-rigel.2 >.github/rigel-version
+git add .github/rigel-version
+git commit -q -m 'merge different version state'
+merge="$(git rev-parse HEAD)"
+if [ "$(git rev-parse "${merge}^1")" = "$noop" ] && [ "$(git rev-parse "${merge}^2")" = "$different" ] && [ "$(git show "${merge}^2:.github/rigel-version")" = 1.1.0-rigel.3 ] && GH_LOG="$dir/merge-gh.log" GH_MODE=create "$script" mint "$merge" RigelBuild/nix2container >/dev/null 2>&1 && grep -Fq "sha=${new}" "$dir/merge-gh.log"; then
+  echo 'ok   merge mint targets version-setting commit on first-parent path'
+else
+  echo 'FAIL merge mint targets version-setting commit on first-parent path'
   fails=$((fails + 1))
 fi
 before="$(wc -l <"$GH_LOG")"

@@ -55,7 +55,6 @@ jobs:
           repositories: nix2container
 
       - name: Mint release tag if needed
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_SHA: ${{ github.sha }}
