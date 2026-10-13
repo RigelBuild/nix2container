@@ -164,7 +164,8 @@ workflow="$(dirname "$script")/../workflows/release-tag.yaml"
 # Dispatch must mint too; only the ref guard and the job-level PR split may carry an `if`.
 if [ "$(yq -r '.jobs.mint.steps[] | select(.name == "Mint release tag if needed") | has("if")' "$workflow")" = false ] \
   && [ "$(yq -r '.jobs.mint.if' "$workflow")" = "github.event_name != 'pull_request'" ] \
-  && [ "$(yq -r '.on | has("workflow_dispatch")' "$workflow")" = true ]; then
+  && [ "$(yq -r '.on | has("workflow_dispatch")' "$workflow")" = true ] \
+  && [ "$(yq -r '.on.push.branches | join(",")' "$workflow")" = rigel-release ]; then
   echo 'ok   push and dispatch both reach the mint step'
 else
   echo 'FAIL push and dispatch both reach the mint step'
