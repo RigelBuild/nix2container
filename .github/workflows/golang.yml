@@ -14,10 +14,17 @@ jobs:
       uses: actions/checkout@v2
     - name: Test
       run: go test ./...
+  release-tag-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    - name: Test release tag script
+      run: bash .github/scripts/release-tag.test.sh
   CI:
-    needs: [test]
+    needs: [test, release-tag-test]
     # A skipped required check counts as passing, so always run and fail on a non-success test.
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-    - run: test "${{ needs.test.result }}" = success
+    - run: test "${{ needs.test.result }}" = success && test "${{ needs.release-tag-test.result }}" = success
