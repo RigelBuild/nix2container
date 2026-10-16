@@ -172,4 +172,15 @@ else
   fails=$((fails + 1))
 fi
 
+# workflows: write lets GitHub create a tag at a commit whose workflow tree matches no branch tip.
+token='.jobs.mint.steps[] | select(.name == "Create scoped release App token") | .with'
+if [ "$(yq -r "$token | keys | map(select(test(\"^permission-\"))) | sort | join(\",\")" "$workflow")" = permission-contents,permission-workflows ] \
+  && [ "$(yq -r "$token | .\"permission-contents\"" "$workflow")" = write ] \
+  && [ "$(yq -r "$token | .\"permission-workflows\"" "$workflow")" = write ]; then
+  echo 'ok   mint token has contents and workflows write only'
+else
+  echo 'FAIL mint token has contents and workflows write only'
+  fails=$((fails + 1))
+fi
+
 [ "$fails" -eq 0 ]
