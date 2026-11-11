@@ -6,9 +6,9 @@ default_branch = "rigel-release"
 hooks {
     ["pre-push"] {
         steps {
-            ["release-workflow-yaml"] = new Step {
-                glob = List(".github/workflows/release.yml")
-                check = "yq -e '.jobs | keys' {{files}} >/dev/null"
+            ["workflow-lint"] = new Step {
+                glob = List(".github/workflows/release.yml", ".github/workflows/golangci-lint.yml")
+                check = "actionlint {{files}}"
             }
         }
     }
