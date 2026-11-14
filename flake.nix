@@ -40,7 +40,7 @@
           default = pkgs.mkShell {
             buildInputs = [
               pkgs.go pkgs.godef pkgs.gopls
-              pkgs.golangci-lint
+              pkgs.golangci-lint pkgs.actionlint
             ];
           };
         }

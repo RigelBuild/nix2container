@@ -1,0 +1,96 @@
+name: release
+
+# A v*-rigel.N tag, minted by release-tag.yaml, publishes the nix2container binaries.
+# workflow_dispatch backfills an existing tag: pass it as the tag input.
+# Pull requests run only the build matrix, so a broken cross-compile fails before a tag exists.
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*-rigel.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish, e.g. v1.1.0-rigel.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - name: Require the tag to name the version file
+        if: github.event_name != 'pull_request'
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: test "$RELEASE_TAG" = "v$(cat .github/rigel-version)"
+
+  build:
+    needs: guard
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          # Release binaries use a current 1.26 patch release, not the go.mod language floor.
+          go-version: '1.26'
+          check-latest: true
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          out="nix2container_v$(cat .github/rigel-version)_${GOOS}_${GOARCH}"
+          go build -trimpath -ldflags '-s -w' -o "$out" .
+          sha256sum "$out" > "$out.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: nix2container_*
+
+  release:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - name: Require the tag to name the version file
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: test "$RELEASE_TAG" = "v$(cat .github/rigel-version)"
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Aggregate SHA256SUMS
+        run: cd dist && cat ./*.sha256 > SHA256SUMS && rm -f ./*.sha256
+      - uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            dist/nix2container_*
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
